@@ -8,6 +8,13 @@ FetchContent_Declare(
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
+# Keep clangd from borrowing third-party compile flags for project headers.
+if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.20")
+  set_target_properties(gtest gtest_main gmock gmock_main PROPERTIES
+    EXPORT_COMPILE_COMMANDS OFF
+  )
+endif()
+
 add_executable(test_ingestion test_ingestion.cpp)
 target_link_libraries(test_ingestion PRIVATE
   prediction_lib
@@ -17,3 +24,11 @@ target_link_libraries(test_ingestion PRIVATE
 
 include(GoogleTest)
 gtest_discover_tests(test_ingestion)
+
+add_executable(test_csv_reader test_csv_reader.cpp)
+target_link_libraries(test_csv_reader PRIVATE
+  prediction_lib
+  GTest::gtest_main
+  Eigen3::Eigen
+)
+gtest_discover_tests(test_csv_reader)

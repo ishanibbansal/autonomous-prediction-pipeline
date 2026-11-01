@@ -42,3 +42,14 @@ ctest --test-dir build --output-on-failure
 - There is no `SE(3)` world-to-ego inverse. Only the planar inverse is implemented.
 - `DetectionFrame` stores both `ego_pose_2d` and `ego_pose_se3`. Nothing checks that one is the planar projection of the other. Callers pick which transform to apply.
 - Track and trajectory structs are contracts only. No filter, association, or predictor exists yet.
+
+### Log 1.4: Phase 2 stream-based CSV ingestion and frame grouping
+
+- **Date:** October 31, 2026
+- **What landed:** Header-only `prediction::CsvReader(std::istream&)`, `read_next_frame`, and `load_all_frames`. No new dependencies or library target changes.
+- **CSV contract:** The first nonblank line must contain the eleven schema names in order; names and numeric tokens are whitespace-trimmed. Quoted CSV fields are not supported. Invalid/missing headers permanently exhaust the reader. Input rows are assumed ordered by frame ID; grouping is consecutive, not a global merge or sort.
+- **Validation:** Frame IDs are digit-only uint64 values with overflow checks. Floating-point tokens must parse completely and be finite. Malformed rows are skipped, including partial detections, trailing numeric garbage, and nonpositive box dimensions. Detection headings are normalized; ego yaw is retained as supplied. Score is retained without an additional range restriction.
+- **Empty frames:** All six detection fields must individually be empty or case-insensitive `nan` to form a sentinel. Mixed empty/NaN sentinels are supported; partial sentinels are rejected. Sentinels never erase accumulated detections.
+- **Grouping and poses:** Only valid rows start frames or trigger boundaries. One validated lookahead row is cached; the last frame flushes exactly once at EOF. Repeated-ID metadata must exactly equal the first valid row's timestamp and pose, otherwise the row is skipped. Each frame has consistent planar 2D and SE(3) ego-to-world poses. A false return leaves the output unchanged.
+- **Tests:** Added `test_csv_reader` with 11 discovered cases covering grouping, streaming/load-all equivalence, independent SE(3) expectations, heading normalization, malformed-row recovery, full uint64 range, sentinel variants and every partial sentinel combination, metadata conflicts, and unchanged output on failure. Computed poses/angles use tolerances against independent expectations.
+- **Verification:** Ran a clean rebuild followed by `cmake -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON && cmake --build build && ctest --test-dir build --output-on-failure`. All **15/15 tests passed** (4 Phase 1, 11 Phase 2), with zero compiler warnings. Project targets retain `-std=c++17 -Wall -Wextra -Wpedantic -Wconversion -Wshadow` and compiler extensions remain disabled.

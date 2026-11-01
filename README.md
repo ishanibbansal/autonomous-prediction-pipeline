@@ -1,6 +1,6 @@
 # Autonomous Prediction Pipeline
 
-A standalone C++17 library for multi-object tracking and trajectory prediction. This repository currently contains Milestone 1, Phase 1: detection contracts and ego-to-world coordinate transforms. It does not yet include a tracker, a motion model, or a predictor.
+A standalone C++17 library for multi-object tracking and trajectory prediction. This repository currently contains Milestone 1 through Phase 2: detection contracts, ego-to-world coordinate transforms, and stream-based CSV ingestion. It does not yet include a tracker, a motion model, or a predictor.
 
 Detections can be transformed with a planar `SE(2)` pose or projected from an upstream `4 x 4` `SE(3)` ego-to-world transform onto the global bird's-eye-view plane. Downstream track and trajectory structs are declared so later phases can link against the same contracts.
 
@@ -12,16 +12,33 @@ Detections can be transformed with a planar `SE(2)` pose or projected from an up
 - `SE(3)` projection that drops world `z` and takes heading from the rotated local forward vector.
 - GoogleTest coverage for wrapping, `SE(2)` round trips, planar `SE(3)` equivalence, and a pitched/rolled BEV projection.
 
+## Phase 2
+
+`prediction::CsvReader` reads an unquoted perception CSV from any `std::istream` and groups consecutive valid rows with the same `frame_id` into `DetectionFrame` packets.
+
+```text
+frame_id,timestamp,ego_x,ego_y,ego_yaw,det_x,det_y,size_x,size_y,heading,score
+```
+
+- `read_next_frame(DetectionFrame&)` streams one frame at a time. `load_all_frames` is a convenience wrapper. On `false`, the output frame is unchanged.
+- Frame IDs must be digit-only `uint64_t` values. All other required numeric fields must parse completely and be finite. Detection headings are normalized, and nonpositive box dimensions are rejected.
+- Each valid frame receives both a planar ego pose and a matching roll- and pitch-free `SE(3)` ego-to-world transform.
+- An empty frame is represented by one row whose six detection fields are individually empty or case-insensitive `nan`. Partial sentinels and other malformed rows are skipped without interrupting valid rows around them.
+- The first valid row defines a frame's timestamp and ego pose. Later rows for that frame with conflicting metadata are skipped.
+
 Engineering decisions and verification notes live in [`docs/dev_log.md`](docs/dev_log.md).
 
 ## Directory structure
 
 ```
 ├── CMakeLists.txt                 # C++17, Eigen3, warning flags on prediction_lib
-├── include/prediction/types.hpp   # Contracts and SE(2) / SE(3) transforms
+├── include/prediction/
+│   ├── types.hpp                 # Contracts and SE(2) / SE(3) transforms
+│   └── csv_reader.hpp            # Stream-based CSV ingestion and frame grouping
 ├── tests/
 │   ├── CMakeLists.txt             # GoogleTest v1.14.0 via FetchContent
-│   └── test_ingestion.cpp         # Angle wrap and frame-transform tests
+│   ├── test_ingestion.cpp         # Angle wrap and frame-transform tests
+│   └── test_csv_reader.cpp        # CSV schema, grouping, and malformed-input tests
 └── docs/dev_log.md               # Engineering scratchpad, not a user guide
 ```
 
