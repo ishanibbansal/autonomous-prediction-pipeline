@@ -1,6 +1,6 @@
 # Autonomous Prediction Pipeline
 
-A standalone C++17 library for multi-object tracking and trajectory prediction. This repository currently contains Milestone 1 through Phase 2: detection contracts, ego-to-world coordinate transforms, and stream-based CSV ingestion. It does not yet include a tracker, a motion model, or a predictor.
+A standalone C++17 library for multi-object tracking and trajectory prediction. This repository currently contains Milestone 1 and the Milestone 2 Phase 1 motion model: detection contracts, ego-to-world coordinate transforms, stream-based CSV ingestion, and a single-target 6D Kalman filter. It does not yet include association, a multi-object tracker, or a trajectory predictor.
 
 Detections can be transformed with a planar `SE(2)` pose or projected from an upstream `4 x 4` `SE(3)` ego-to-world transform onto the global bird's-eye-view plane. Downstream track and trajectory structs are declared so later phases can link against the same contracts.
 
@@ -26,6 +26,19 @@ frame_id,timestamp,ego_x,ego_y,ego_yaw,det_x,det_y,size_x,size_y,heading,score
 - An empty frame is represented by one row whose six detection fields are individually empty or case-insensitive `nan`. Partial sentinels and other malformed rows are skipped without interrupting valid rows around them.
 - The first valid row defines a frame's timestamp and ego pose. Later rows for that frame with conflicting metadata are skipped.
 
+## Milestone 2, Phase 1
+
+`prediction::KalmanFilter` is a header-only single-target filter on `TrackState`. The world-frame state is `[x, y, v_x, v_y, psi, omega]`. Measurements are world-frame detections `[x, y, heading]`. Heading is a directed `2 pi` angle, and the yaw residual is wrapped into `[-pi, pi]`.
+
+- Process noise is discrete piecewise-constant white acceleration noise. The translational and yaw blocks use `(1/4) dt^4`, `(1/2) dt^3`, and `dt^2` times the configured acceleration variance. Splitting one interval into smaller predict steps changes the accumulated noise.
+- `(v_x, v_y)` and `(psi, omega)` are independent linear blocks. This is not a coordinated-turn model: turn rate does not rotate the velocity vector.
+- `predict` and `update` never change `track_id` or `status`. `update` does not gate. A large but valid innovation is applied; association belongs to the caller.
+- The caller must pass world-frame detections. `Detection` does not record its frame, so the filter cannot check that itself.
+- Configuration variances must be finite and strictly positive. An invalid config throws `std::invalid_argument` from the constructor. The stored copy is available only through `config()`.
+- `initialize` returns `std::nullopt` for a detection whose position, heading, or score is non-finite, or whose length or width is not strictly positive. Score is not restricted to `[0, 1]`.
+- `predict`, `update`, and `mahalanobis_distance_squared` fail transactionally. A negative, NaN, or infinite `dt`, a non-admissible track, a malformed detection, a failed or non-positive-definite innovation covariance, or a non-finite computed result leaves the track unchanged. `predict` with `dt == 0` on an admissible track is an exact no-op.
+- Innovation systems are solved with `Eigen::LDLT`, not an explicit inverse. Covariance is symmetrized after propagation and update. The measurement update uses the Joseph form.
+
 Engineering decisions and verification notes live in [`docs/dev_log.md`](docs/dev_log.md).
 
 ## Directory structure
@@ -34,11 +47,14 @@ Engineering decisions and verification notes live in [`docs/dev_log.md`](docs/de
 ├── CMakeLists.txt                 # C++17, Eigen3, warning flags on prediction_lib
 ├── include/prediction/
 │   ├── types.hpp                 # Contracts and SE(2) / SE(3) transforms
-│   └── csv_reader.hpp            # Stream-based CSV ingestion and frame grouping
+│   ├── csv_reader.hpp            # Stream-based CSV ingestion and frame grouping
+│   └── kalman_filter.hpp         # Single-target 6D world-frame Kalman filter
 ├── tests/
 │   ├── CMakeLists.txt             # GoogleTest v1.14.0 via FetchContent
 │   ├── test_ingestion.cpp         # Angle wrap and frame-transform tests
-│   └── test_csv_reader.cpp        # CSV schema, grouping, and malformed-input tests
+│   ├── test_csv_reader.cpp        # CSV schema, grouping, and malformed-input tests
+│   ├── test_kalman_filter.cpp     # Filter contract, wrap, and rejection tests
+│   └── kalman_filter_linkage.cpp  # Second TU for the header-only ODR check
 └── docs/dev_log.md               # Engineering scratchpad, not a user guide
 ```
 
