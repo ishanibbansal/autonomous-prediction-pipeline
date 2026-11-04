@@ -43,3 +43,14 @@ target_link_libraries(test_kalman_filter PRIVATE
   Eigen3::Eigen
 )
 gtest_discover_tests(test_kalman_filter)
+
+add_executable(test_data_association
+  test_data_association.cpp
+  data_association_linkage.cpp
+)
+target_link_libraries(test_data_association PRIVATE
+  prediction_lib
+  GTest::gtest_main
+  Eigen3::Eigen
+)
+gtest_discover_tests(test_data_association)

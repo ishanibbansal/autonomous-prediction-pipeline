@@ -1,6 +1,6 @@
 # Autonomous Prediction Pipeline
 
-A standalone C++17 library for multi-object tracking and trajectory prediction. This repository currently contains Milestone 1 and the Milestone 2 Phase 1 motion model: detection contracts, ego-to-world coordinate transforms, stream-based CSV ingestion, and a single-target 6D Kalman filter. It does not yet include association, a multi-object tracker, or a trajectory predictor.
+A standalone C++17 library for multi-object tracking and trajectory prediction. This repository currently contains Milestone 1 and Milestone 2 Phases 1 and 2: detection contracts, ego-to-world coordinate transforms, stream-based CSV ingestion, a single-target 6D Kalman filter, and gated global data association. It does not yet include a multi-object tracker or a trajectory predictor.
 
 Detections can be transformed with a planar `SE(2)` pose or projected from an upstream `4 x 4` `SE(3)` ego-to-world transform onto the global bird's-eye-view plane. Downstream track and trajectory structs are declared so later phases can link against the same contracts.
 
@@ -39,6 +39,17 @@ frame_id,timestamp,ego_x,ego_y,ego_yaw,det_x,det_y,size_x,size_y,heading,score
 - `predict`, `update`, and `mahalanobis_distance_squared` fail transactionally. A negative, NaN, or infinite `dt`, a non-admissible track, a malformed detection, a failed or non-positive-definite innovation covariance, or a non-finite computed result leaves the track unchanged. `predict` with `dt == 0` on an admissible track is an exact no-op.
 - Innovation systems are solved with `Eigen::LDLT`, not an explicit inverse. Covariance is symmetrized after propagation and update. The measurement update uses the Joseph form.
 
+## Milestone 2, Phase 2
+
+`prediction::DataAssociation` solves gated track-to-detection assignment. It does not predict or update tracks. Both the track state and every detection must already be in the same world frame.
+
+- A pair is admissible when `KalmanFilter::mahalanobis_distance_squared` returns a finite value no greater than `gate_threshold_sq`. The default threshold is the 3-degree chi-squared 0.99 bound, `11.344866730144373`. The comparison is exact: equality is accepted.
+- `gate_threshold_sq` must be finite and strictly positive. An invalid config throws `std::invalid_argument` from the constructor.
+- Among admissible one-to-one matchings, the result first maximizes the number of matches and then minimizes the sum of squared Mahalanobis distances. Admissible solver costs are `d^2 / gate_threshold_sq`, so they lie in `[0, 1]`. Each track also has one private dummy column with cost `min(M, N) + 1`. Forbidden pairs, including any pair for which the filter returns `std::nullopt`, are omitted from the search rather than represented by a large finite cost.
+- A non-admissible track or malformed detection therefore stays unmatched and does not disturb any other admissible pair. Inputs are not mutated.
+- `matches` are sorted by ascending track index. `unmatched_tracks` and `unmatched_detections` are sorted ascending. Every supplied index appears in exactly one of those collections.
+- `solve_cost_matrix` exposes the same rectangular assignment solver for direct tests. It preserves `0 x N` and `M x 0` dimensions and adds the cardinality-safe dummy penalty internally. Present costs must be finite and nonnegative, and should be normalized to at most 1 when cardinality priority is required.
+
 Engineering decisions and verification notes live in [`docs/dev_log.md`](docs/dev_log.md).
 
 ## Directory structure
@@ -48,13 +59,16 @@ Engineering decisions and verification notes live in [`docs/dev_log.md`](docs/de
 ├── include/prediction/
 │   ├── types.hpp                 # Contracts and SE(2) / SE(3) transforms
 │   ├── csv_reader.hpp            # Stream-based CSV ingestion and frame grouping
-│   └── kalman_filter.hpp         # Single-target 6D world-frame Kalman filter
+│   ├── kalman_filter.hpp         # Single-target 6D world-frame Kalman filter
+│   └── data_association.hpp      # Gated Hungarian track-to-detection assignment
 ├── tests/
-│   ├── CMakeLists.txt             # GoogleTest v1.14.0 via FetchContent
-│   ├── test_ingestion.cpp         # Angle wrap and frame-transform tests
-│   ├── test_csv_reader.cpp        # CSV schema, grouping, and malformed-input tests
-│   ├── test_kalman_filter.cpp     # Filter contract, wrap, and rejection tests
-│   └── kalman_filter_linkage.cpp  # Second TU for the header-only ODR check
+│   ├── CMakeLists.txt                # GoogleTest v1.14.0 via FetchContent
+│   ├── test_ingestion.cpp            # Angle wrap and frame-transform tests
+│   ├── test_csv_reader.cpp           # CSV schema, grouping, and malformed-input tests
+│   ├── test_kalman_filter.cpp        # Filter contract, wrap, and rejection tests
+│   ├── kalman_filter_linkage.cpp     # Second TU for the header-only filter ODR check
+│   ├── test_data_association.cpp     # Gating, optimality, and rectangular assignment tests
+│   └── data_association_linkage.cpp  # Second TU for the header-only associator ODR check
 └── docs/dev_log.md               # Engineering scratchpad, not a user guide
 ```
 
