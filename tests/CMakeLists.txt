@@ -54,3 +54,14 @@ target_link_libraries(test_data_association PRIVATE
   Eigen3::Eigen
 )
 gtest_discover_tests(test_data_association)
+
+add_executable(test_tracker
+  test_tracker.cpp
+  tracker_linkage.cpp
+)
+target_link_libraries(test_tracker PRIVATE
+  prediction_lib
+  GTest::gtest_main
+  Eigen3::Eigen
+)
+gtest_discover_tests(test_tracker)
