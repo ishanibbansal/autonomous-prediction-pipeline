@@ -1,6 +1,6 @@
 # Autonomous Prediction Pipeline
 
-A standalone C++17 library for multi-object tracking and trajectory prediction. This repository currently contains Milestone 1 and Milestone 2 Phases 1 and 2: detection contracts, ego-to-world coordinate transforms, stream-based CSV ingestion, a single-target 6D Kalman filter, and gated global data association. It does not yet include a multi-object tracker or a trajectory predictor.
+A standalone C++17 library for multi-object tracking and trajectory prediction. This repository currently contains Milestone 1 and Milestone 2 Phases 1 through 3: detection contracts, ego-to-world coordinate transforms, stream-based CSV ingestion, a single-target 6D Kalman filter, gated global data association, and a multi-object tracker. It does not yet include a trajectory predictor.
 
 Detections can be transformed with a planar `SE(2)` pose or projected from an upstream `4 x 4` `SE(3)` ego-to-world transform onto the global bird's-eye-view plane. Downstream track and trajectory structs are declared so later phases can link against the same contracts.
 
@@ -50,6 +50,44 @@ frame_id,timestamp,ego_x,ego_y,ego_yaw,det_x,det_y,size_x,size_y,heading,score
 - `matches` are sorted by ascending track index. `unmatched_tracks` and `unmatched_detections` are sorted ascending. Every supplied index appears in exactly one of those collections.
 - `solve_cost_matrix` exposes the same rectangular assignment solver for direct tests. It preserves `0 x N` and `M x 0` dimensions and adds the cardinality-safe dummy penalty internally. Present costs must be finite and nonnegative, and should be normalized to at most 1 when cardinality priority is required.
 
+## Multi-object tracker
+
+`prediction::MultiObjectTracker` owns the track list. Each frame is transformed into the world frame, predicted once, associated, updated or coasted, pruned, then used to birth new tracks. Track state stays the Milestone 1 `TrackState`. Hit counters and timestamps live in a parallel `TrackRecord`, so association still receives the track vector directly.
+
+Lifecycle, in order:
+
+- A birth is `Tentative`, with one hit. If `min_hits_to_confirm` is 1, it is `Confirmed` in that same frame.
+- Further consecutive hits promote `Tentative` to `Confirmed` once `consecutive_hits` reaches `min_hits_to_confirm`.
+- A miss clears the consecutive-hit counter. `Confirmed` becomes `Lost`. A later hit returns `Lost` to `Confirmed` without waiting for another confirmation streak. `Lost` does not become `Tentative`.
+- A `Tentative` track is removed when `consecutive_misses` exceeds `max_tentative_misses`. The default of 0 drops it on the first miss. Any status is removed when `consecutive_misses` exceeds `max_consecutive_misses`.
+
+`TrackerConfig` defaults:
+
+- `min_hits_to_confirm = 3`
+- `max_consecutive_misses = 5`
+- `max_tentative_misses = 0`
+- `output_policy = ConfirmedAndLost`
+- `pose_source = Planar`
+
+Those three counters are checked before the filter and associator are built. `0` confirmation hits, `0` allowed misses, or a tentative-miss limit above the general miss limit throws `std::invalid_argument` naming the field. Invalid nested filter or association settings still throw from those constructors.
+
+Output policies are `ConfirmedOnly`, `ConfirmedAndLost`, and `All`. `process_frame` returns a reference to the policy view of the live tracks. That reference is invalidated by the next `process_frame` or `reset`. `tracks(policy)` returns a copy. Live tracks, including those hidden by the policy, stay in ascending `track_id` order, starting at 1. `reset()` clears them and starts again at 1. Every returned state has been predicted to the latest accepted timestamp.
+
+`PoseSource::Planar` uses `ego_pose_2d`. `PoseSource::SE3` uses `ego_pose_se3`. The other pose is not read and may be non-finite.
+
+`process_frame` rejects a frame before it changes any tracker state when the timestamp is non-finite, the selected pose is non-finite, `frame_id` is not strictly greater than the previous accepted id, or the timestamp moves backwards. The first frame after construction or `reset()` may use any id, including 0, and any finite timestamp. Equal timestamps are accepted and produce `dt = 0`, which is still a hit if the detection matches. A rejected frame throws `std::invalid_argument` and leaves tracks, records, ids, history, and the previous output buffer unchanged.
+
+```cpp
+std::ifstream file("perception.csv");
+prediction::CsvReader reader(file);
+prediction::MultiObjectTracker tracker;
+prediction::DetectionFrame frame;
+while (reader.read_next_frame(frame)) {
+  const std::vector<prediction::TrackState>& tracks = tracker.process_frame(frame);
+  // tracks is invalidated by the next process_frame or reset.
+}
+```
+
 Engineering decisions and verification notes live in [`docs/dev_log.md`](docs/dev_log.md).
 
 ## Directory structure
@@ -60,7 +98,8 @@ Engineering decisions and verification notes live in [`docs/dev_log.md`](docs/de
 │   ├── types.hpp                 # Contracts and SE(2) / SE(3) transforms
 │   ├── csv_reader.hpp            # Stream-based CSV ingestion and frame grouping
 │   ├── kalman_filter.hpp         # Single-target 6D world-frame Kalman filter
-│   └── data_association.hpp      # Gated Hungarian track-to-detection assignment
+│   ├── data_association.hpp      # Gated Hungarian track-to-detection assignment
+│   └── tracker.hpp               # Multi-object lifecycle: confirm, coast, prune, birth
 ├── tests/
 │   ├── CMakeLists.txt                # GoogleTest v1.14.0 via FetchContent
 │   ├── test_ingestion.cpp            # Angle wrap and frame-transform tests
@@ -68,7 +107,9 @@ Engineering decisions and verification notes live in [`docs/dev_log.md`](docs/de
 │   ├── test_kalman_filter.cpp        # Filter contract, wrap, and rejection tests
 │   ├── kalman_filter_linkage.cpp     # Second TU for the header-only filter ODR check
 │   ├── test_data_association.cpp     # Gating, optimality, and rectangular assignment tests
-│   └── data_association_linkage.cpp  # Second TU for the header-only associator ODR check
+│   ├── data_association_linkage.cpp  # Second TU for the header-only associator ODR check
+│   ├── test_tracker.cpp              # Lifecycle, coasting, validation, and crossing tests
+│   └── tracker_linkage.cpp           # Second TU for the header-only tracker ODR check
 └── docs/dev_log.md               # Engineering scratchpad, not a user guide
 ```
 
