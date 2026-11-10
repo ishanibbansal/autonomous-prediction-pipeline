@@ -60,10 +60,37 @@ struct PredictedWaypoint {
   Eigen::Matrix2d position_covariance{Eigen::Matrix2d::Identity()};
 };
 
+/// One future sample of a kinematic trajectory mode.
+/// position is meters, velocity is m/s, heading is radians in the range returned
+/// by normalize_angle, timestamp is seconds, and position_covariance is m^2.
+struct TrajectoryPoint {
+  Eigen::Vector2d position{Eigen::Vector2d::Zero()};
+  Eigen::Vector2d velocity{Eigen::Vector2d::Zero()};
+  double heading{0.0};
+  double timestamp{0.0};
+  Eigen::Matrix2d position_covariance{Eigen::Matrix2d::Zero()};
+};
+
+/// One geometric motion hypothesis and its heuristic mixture weight.
+/// probability is not a calibrated behavioral probability.
+struct TrajectoryMode {
+  double probability{0.0};
+  std::vector<TrajectoryPoint> waypoints{};
+};
+
+/// Downstream trajectory contract.
+///
+/// The fields above `modes` are the Milestone 1 contract and keep their order.
+/// `waypoints` remains the legacy single-trajectory view. A predictor-produced
+/// result also fills `modes`, which is the authoritative multimodal trajectory.
+/// That predictor copies the straight mode into `waypoints` without velocity, so
+/// the straight samples are stored twice. A default-constructed value has neither
+/// legacy waypoints nor modes; emptiness is not a predictor error code.
 struct PredictedTrajectory {
   std::uint64_t track_id{0};
   TrackState current_state{};
   std::vector<PredictedWaypoint> waypoints{};
+  std::vector<TrajectoryMode> modes{};
 };
 
 /// Wraps a finite angle into [-pi, pi]. +/- pi are equivalent and either

@@ -1,6 +1,6 @@
 # Autonomous Prediction Pipeline
 
-A standalone C++17 library for multi-object tracking and trajectory prediction. This repository currently contains Milestone 1 and Milestone 2 Phases 1 through 3: detection contracts, ego-to-world coordinate transforms, stream-based CSV ingestion, a single-target 6D Kalman filter, gated global data association, and a multi-object tracker. It does not yet include a trajectory predictor.
+A standalone C++17 library for multi-object tracking and trajectory prediction. This repository currently contains Milestone 1, Milestone 2, and Milestone 3 Phase 1: detection contracts, ego-to-world coordinate transforms, stream-based CSV ingestion, a single-target 6D Kalman filter, gated global data association, a multi-object tracker, and a kinematic multimodal trajectory predictor.
 
 Detections can be transformed with a planar `SE(2)` pose or projected from an upstream `4 x 4` `SE(3)` ego-to-world transform onto the global bird's-eye-view plane. Downstream track and trajectory structs are declared so later phases can link against the same contracts.
 
@@ -88,6 +88,21 @@ while (reader.read_next_frame(frame)) {
 }
 ```
 
+## Milestone 3, Phase 1
+
+`prediction::KinematicTrajectoryPredictor` forecasts one world-frame `TrackState` as three constant-speed modes. It does not track, associate, or advance a coasted track. The caller supplies a state that is already valid at `current_timestamp`.
+
+- Samples are future steps only. With `N = round(H / dt)`, sample `m` is at `current_timestamp + m * dt`. The realized horizon is `N * dt`, which can overshoot or undershoot the requested horizon. `N` must be in `[1, 10000]`.
+- World velocity stays independent of body heading, matching the Kalman filter. A mode with rate `r` rotates the supplied velocity. It does not rebuild velocity as speed along heading. Positive `r` is counterclockwise in the world frame, not an overtake; negative `r` is clockwise, not a yield.
+- The straight rate is `0`. The other rates are `max(omega, branch_turn_rate)` and `min(omega, -branch_turn_rate)`. Those are minimum signed rates, not `omega +/- branch_turn_rate`.
+- The circular displacement uses `t * sinc(r t / 2) * R(r t / 2)`. Near-zero angles use a Taylor series, so a tiny rate does not divide by the rate or subtract nearly equal cosines.
+- An exactly stationary track holds its position and normalized heading in every mode. Any nonzero finite velocity is rolled out. There is no 0.1 m/s snap to zero.
+- `modes` is the authoritative result, ordered straight, counterclockwise, clockwise. `waypoints` remains the Milestone 1 field and copies the straight mode without velocity. `current_state` is an unchanged copy of the input, including an unnormalized heading.
+- Position covariance is the same heuristic in every mode: `P_pp + t^2 P_vv + q t I`. It ignores cross covariance and angular uncertainty. It is symmetric and positive semidefinite, not necessarily positive definite, and its diagonals need not grow when velocity variance and diffusion are zero. `q` is `pos_diffusion_rate` in m^2/s and is not squared again.
+- Mixture weights are normalized when they already sum to 1 within `1e-6`. They are heuristic weights, not calibrated intent probabilities.
+- Configuration and malformed-track failures throw `std::invalid_argument` and name the field. A nonfinite computed sample, or a finite timestamp grid that is no longer strictly increasing, throws `std::overflow_error`. A batch rejects the whole call; it does not return a prefix. Status is not filtered.
+- The returned vectors may allocate on every call. There is no zero-allocation workspace overload in this phase.
+
 Engineering decisions and verification notes live in [`docs/dev_log.md`](docs/dev_log.md).
 
 ## Directory structure
@@ -99,7 +114,8 @@ Engineering decisions and verification notes live in [`docs/dev_log.md`](docs/de
 │   ├── csv_reader.hpp            # Stream-based CSV ingestion and frame grouping
 │   ├── kalman_filter.hpp         # Single-target 6D world-frame Kalman filter
 │   ├── data_association.hpp      # Gated Hungarian track-to-detection assignment
-│   └── tracker.hpp               # Multi-object lifecycle: confirm, coast, prune, birth
+│   ├── tracker.hpp               # Multi-object lifecycle: confirm, coast, prune, birth
+│   └── predictor.hpp             # Constant-speed three-mode trajectory forecast
 ├── tests/
 │   ├── CMakeLists.txt                # GoogleTest v1.14.0 via FetchContent
 │   ├── test_ingestion.cpp            # Angle wrap and frame-transform tests
@@ -109,7 +125,9 @@ Engineering decisions and verification notes live in [`docs/dev_log.md`](docs/de
 │   ├── test_data_association.cpp     # Gating, optimality, and rectangular assignment tests
 │   ├── data_association_linkage.cpp  # Second TU for the header-only associator ODR check
 │   ├── test_tracker.cpp              # Lifecycle, coasting, validation, and crossing tests
-│   └── tracker_linkage.cpp           # Second TU for the header-only tracker ODR check
+│   ├── tracker_linkage.cpp           # Second TU for the header-only tracker ODR check
+│   ├── test_predictor.cpp            # Kinematic rollout, covariance, and rejection tests
+│   └── predictor_linkage.cpp         # Second TU for the header-only predictor ODR check
 └── docs/dev_log.md               # Engineering scratchpad, not a user guide
 ```
 
