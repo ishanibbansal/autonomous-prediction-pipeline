@@ -76,3 +76,14 @@ target_link_libraries(test_predictor PRIVATE
   Eigen3::Eigen
 )
 gtest_discover_tests(test_predictor)
+
+add_executable(test_metrics
+  test_metrics.cpp
+  metrics_linkage.cpp
+)
+target_link_libraries(test_metrics PRIVATE
+  prediction_lib
+  GTest::gtest_main
+  Eigen3::Eigen
+)
+gtest_discover_tests(test_metrics)

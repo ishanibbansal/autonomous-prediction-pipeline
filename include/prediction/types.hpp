@@ -93,6 +93,22 @@ struct PredictedTrajectory {
   std::vector<TrajectoryMode> modes{};
 };
 
+/// One ground-truth future sample used by the trajectory benchmark.
+/// position is meters in the same frame as the forecast, and timestamp is
+/// seconds on the same clock. Frame and clock identity are caller obligations.
+struct GroundTruthWaypoint {
+  double timestamp{0.0};
+  Eigen::Vector2d position{Eigen::Vector2d::Zero()};
+};
+
+/// Ordered future samples for one track. waypoints is empty by default.
+/// position is meters in the same frame as the forecast, and timestamp is
+/// seconds on the same clock. Frame and clock identity are caller obligations.
+struct GroundTruthTrajectory {
+  std::uint64_t track_id{0};
+  std::vector<GroundTruthWaypoint> waypoints{};
+};
+
 /// Wraps a finite angle into [-pi, pi]. +/- pi are equivalent and either
 /// endpoint may be returned for odd multiples of pi.
 inline double normalize_angle(double angle) {

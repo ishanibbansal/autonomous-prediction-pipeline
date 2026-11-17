@@ -1,6 +1,6 @@
 # Autonomous Prediction Pipeline
 
-A standalone C++17 library for multi-object tracking and trajectory prediction. This repository currently contains Milestone 1, Milestone 2, and Milestone 3 Phase 1: detection contracts, ego-to-world coordinate transforms, stream-based CSV ingestion, a single-target 6D Kalman filter, gated global data association, a multi-object tracker, and a kinematic multimodal trajectory predictor.
+A standalone C++17 library for multi-object tracking and trajectory prediction. This repository currently contains Milestone 1, Milestone 2, and Milestone 3 Phases 1–2: detection contracts, ego-to-world coordinate transforms, stream-based CSV ingestion, a single-target 6D Kalman filter, gated global data association, a multi-object tracker, a kinematic multimodal trajectory predictor, and a minADE / minFDE / miss-rate evaluator.
 
 Detections can be transformed with a planar `SE(2)` pose or projected from an upstream `4 x 4` `SE(3)` ego-to-world transform onto the global bird's-eye-view plane. Downstream track and trajectory structs are declared so later phases can link against the same contracts.
 
@@ -103,6 +103,17 @@ while (reader.read_next_frame(frame)) {
 - Configuration and malformed-track failures throw `std::invalid_argument` and name the field. A nonfinite computed sample, or a finite timestamp grid that is no longer strictly increasing, throws `std::overflow_error`. A batch rejects the whole call; it does not return a prefix. Status is not filtered.
 - The returned vectors may allocate on every call. There is no zero-allocation workspace overload in this phase.
 
+## Milestone 3, Phase 2
+
+`prediction::TrajectoryEvaluator` scores a multimodal forecast against a ground-truth trajectory. It does not predict. Positions are meters in the same frame as the forecast, and timestamps are seconds on the same clock. Frame and clock identity are caller obligations.
+
+- Every supplied mode is scored in input order. The evaluator does not assume three modes, drop modes, or fall back to the legacy `waypoints` view. Probability, velocity, heading, covariance, `current_state`, and legacy waypoints are not read.
+- Ground-truth waypoints and every mode must be nonempty and the same length. Used positions and timestamps must be finite. Timestamps must strictly increase inside the ground truth and, separately, inside each mode. One sample is valid. Times need not be positive or uniform.
+- Alignment is an inclusive absolute timestamp difference of at most `timestamp_tolerance`. Zero tolerance is exact equality. Samples are not sorted, interpolated, truncated, or resampled. A non-finite timestamp difference cannot match any allowed tolerance.
+- ADE is the unweighted arithmetic mean of `std::hypot(dx, dy)`. FDE is the distance at the last index. `min_ade` and `min_fde` are selected independently. Exact computed ties keep the earliest mode. `is_miss` is true only when `min_fde` is strictly greater than `miss_threshold_meters`.
+- A non-finite coordinate difference, distance, or checked displacement sum throws `std::overflow_error`, including a sum in a mode that would not win. Overflow is not replaced by an online mean. Invalid structure, IDs, used fields, time order, or alignment throws `std::invalid_argument`.
+- `evaluate_batch` scores prediction `i` against ground truth `i`. It does not join by ID. Pairs are weighted equally, not by waypoint count. One invalid pair or an aggregate overflow rejects the whole call.
+
 Engineering decisions and verification notes live in [`docs/dev_log.md`](docs/dev_log.md).
 
 ## Directory structure
@@ -115,7 +126,8 @@ Engineering decisions and verification notes live in [`docs/dev_log.md`](docs/de
 │   ├── kalman_filter.hpp         # Single-target 6D world-frame Kalman filter
 │   ├── data_association.hpp      # Gated Hungarian track-to-detection assignment
 │   ├── tracker.hpp               # Multi-object lifecycle: confirm, coast, prune, birth
-│   └── predictor.hpp             # Constant-speed three-mode trajectory forecast
+│   ├── predictor.hpp             # Constant-speed three-mode trajectory forecast
+│   └── metrics.hpp               # minADE, minFDE, and miss-rate evaluation
 ├── tests/
 │   ├── CMakeLists.txt                # GoogleTest v1.14.0 via FetchContent
 │   ├── test_ingestion.cpp            # Angle wrap and frame-transform tests
@@ -127,7 +139,9 @@ Engineering decisions and verification notes live in [`docs/dev_log.md`](docs/de
 │   ├── test_tracker.cpp              # Lifecycle, coasting, validation, and crossing tests
 │   ├── tracker_linkage.cpp           # Second TU for the header-only tracker ODR check
 │   ├── test_predictor.cpp            # Kinematic rollout, covariance, and rejection tests
-│   └── predictor_linkage.cpp         # Second TU for the header-only predictor ODR check
+│   ├── predictor_linkage.cpp         # Second TU for the header-only predictor ODR check
+│   ├── test_metrics.cpp              # minADE/minFDE scoring, alignment, and overflow tests
+│   └── metrics_linkage.cpp           # Second TU for the header-only evaluator ODR check
 └── docs/dev_log.md               # Engineering scratchpad, not a user guide
 ```
 
