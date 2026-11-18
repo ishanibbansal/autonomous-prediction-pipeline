@@ -3,8 +3,10 @@
 // Three analytic actors share one identity ego pose. The tracker, predictor,
 // and evaluator are the real library types. Ground truth is sampled from the
 // actor motion, never copied from a forecast. The third actor drops out for
-// two frames after confirmation, fewer than max_consecutive_misses, so the
+// three frames after confirmation, fewer than max_consecutive_misses, so the
 // tracker coasts it as Lost and then recovers the same track_id.
+// Tentative tracks are drawn, but they are not forecast: a birth-frame velocity
+// prior would paint a full-canvas covariance before the filter has a second hit.
 
 #include "prediction/metrics.hpp"
 #include "prediction/predictor.hpp"
@@ -25,10 +27,12 @@
 namespace {
 
 constexpr double kDt = 0.1;
-constexpr std::uint64_t kFrameCount = 40;
+constexpr std::uint64_t kFrameCount = 50;
 constexpr std::size_t kDropoutActor = 2U;
+constexpr std::uint64_t kDropoutFirstFrame = 10U;
+constexpr std::uint64_t kDropoutLastFrame = 12U;
 constexpr double kTurnStart = 1.0;
-constexpr double kTurnRate = 0.05;
+constexpr double kTurnRate = 0.35;
 constexpr double kBoxLength = 4.5;
 constexpr double kBoxWidth = 1.8;
 
@@ -47,20 +51,22 @@ struct Actor {
 
 PoseSample sample_cruiser(double time) {
   PoseSample pose;
-  pose.x = -30.0 + 8.0 * time;
-  pose.y = -8.0;
-  pose.vx = 8.0;
+  pose.x = -24.0 + 8.5 * time;
+  pose.y = -6.0;
+  pose.vx = 8.5;
   pose.vy = 0.0;
   pose.heading = 0.0;
   return pose;
 }
 
 PoseSample sample_turner(double time) {
-  const double speed = 6.0;
+  const double speed = 6.5;
+  const double start_x = 2.0;
+  const double start_y = -24.0;
   PoseSample pose;
   if (time <= kTurnStart) {
-    pose.x = -2.0;
-    pose.y = -28.0 + speed * time;
+    pose.x = start_x;
+    pose.y = start_y + speed * time;
     pose.vx = 0.0;
     pose.vy = speed;
     pose.heading = prediction::kPi / 2.0;
@@ -68,21 +74,22 @@ PoseSample sample_turner(double time) {
   }
   const double elapsed = time - kTurnStart;
   const double theta = kTurnRate * elapsed;
-  const double center_x = -2.0 - speed / kTurnRate;
-  const double center_y = -28.0 + speed * kTurnStart;
+  const double radius = speed / kTurnRate;
+  const double center_x = start_x - radius;
+  const double center_y = start_y + speed * kTurnStart;
   const double start_heading = prediction::kPi / 2.0;
   pose.heading = prediction::normalize_angle(start_heading + theta);
   pose.vx = speed * std::cos(pose.heading);
   pose.vy = speed * std::sin(pose.heading);
-  pose.x = center_x + (speed / kTurnRate) * std::sin(pose.heading);
-  pose.y = center_y - (speed / kTurnRate) * std::cos(pose.heading);
+  pose.x = center_x + radius * std::sin(pose.heading);
+  pose.y = center_y - radius * std::cos(pose.heading);
   return pose;
 }
 
 PoseSample sample_dropout(double time) {
   PoseSample pose;
-  pose.x = 24.0 - 7.0 * time;
-  pose.y = 10.0;
+  pose.x = 22.0 - 7.0 * time;
+  pose.y = 8.0;
   pose.vx = -7.0;
   pose.vy = 0.0;
   pose.heading = prediction::kPi;
@@ -101,7 +108,7 @@ bool actor_is_visible(std::size_t actor, std::uint64_t frame) {
   if (actor != kDropoutActor) {
     return true;
   }
-  return frame < 8U || frame >= 10U;
+  return frame < kDropoutFirstFrame || frame > kDropoutLastFrame;
 }
 
 prediction::Detection detection_at(const PoseSample& pose) {
@@ -216,12 +223,22 @@ int main(int argc, char** argv) {
   tracker_config.output_policy = prediction::TrackOutputPolicy::All;
   tracker_config.filter_config.sigma_a_sq = 4.0;
   prediction::MultiObjectTracker tracker(tracker_config);
-  prediction::KinematicTrajectoryPredictor predictor;
+  prediction::PredictorConfig predictor_config;
+  predictor_config.horizon_seconds = 2.5;
+  predictor_config.step_size_seconds = 0.1;
+  predictor_config.branch_turn_rate = 0.35;
+  predictor_config.pos_diffusion_rate = 0.15;
+  prediction::KinematicTrajectoryPredictor predictor(predictor_config);
   prediction::TrajectoryEvaluator evaluator;
   prediction::VisualizerConfig view;
-  view.pixels_per_meter = 8.0;
+  view.width_pixels = 900.0;
+  view.height_pixels = 900.0;
+  view.pixels_per_meter = 15.0;
   view.center_world = Eigen::Vector2d::Zero();
-  view.grid_spacing_meters = 10.0;
+  view.grid_spacing_meters = 5.0;
+  view.covariance_sigma_scale = 1.0;
+  view.ellipse_step_stride = 10U;
+  view.velocity_arrow_seconds = 0.7;
   const prediction::BevVisualizer visualizer(view);
 
   std::vector<std::uint64_t> actor_track(kActorCount, 0U);
@@ -261,29 +278,44 @@ int main(int argc, char** argv) {
         }
       }
 
-      const std::vector<prediction::PredictedTrajectory> predictions = predictor.predict(tracks, time);
-      std::vector<prediction::GroundTruthTrajectory> truths;
-      truths.reserve(predictions.size());
-      for (const prediction::PredictedTrajectory& prediction : predictions) {
-        const auto actor = std::find(actor_track.begin(), actor_track.end(), prediction.track_id);
-        if (actor == actor_track.end()) {
-          return fail("prediction track_id has no actor association");
+      // Birth-frame tracks still have the uninitialized velocity prior. Drawing
+      // them is useful; forecasting them paints a canvas-sized covariance.
+      std::vector<prediction::TrackState> forecast_tracks;
+      forecast_tracks.reserve(tracks.size());
+      for (const prediction::TrackState& track : tracks) {
+        if (track.status != prediction::TrackStatus::Tentative) {
+          forecast_tracks.push_back(track);
         }
-        truths.push_back(
-            truth_for(prediction.track_id, static_cast<std::size_t>(actor - actor_track.begin()), prediction));
       }
 
+      std::vector<prediction::PredictedTrajectory> predictions;
+      std::vector<prediction::GroundTruthTrajectory> truths;
       std::vector<prediction::TrajectoryMetrics> metrics;
-      if (!predictions.empty()) {
+      if (!forecast_tracks.empty()) {
+        predictions = predictor.predict(forecast_tracks, time);
+        truths.reserve(predictions.size());
+        for (const prediction::PredictedTrajectory& prediction : predictions) {
+          const auto actor = std::find(actor_track.begin(), actor_track.end(), prediction.track_id);
+          if (actor == actor_track.end()) {
+            return fail("prediction track_id has no actor association");
+          }
+          truths.push_back(
+              truth_for(prediction.track_id, static_cast<std::size_t>(actor - actor_track.begin()), prediction));
+        }
         const prediction::BatchMetricsSummary summary = evaluator.evaluate_batch(predictions, truths);
         metrics = summary.per_track;
       }
 
       const std::string svg = visualizer.render_frame(time, tracks, predictions, truths, metrics);
-      if (svg.find("<svg") == std::string::npos || svg.find("evaluated") == std::string::npos) {
-        return fail("frame " + std::to_string(frame) + " did not produce an evaluated SVG");
+      if (svg.find("<svg") == std::string::npos) {
+        return fail("frame " + std::to_string(frame) + " did not produce an SVG");
       }
-      saw_evaluated_hud = true;
+      if (!predictions.empty()) {
+        if (svg.find("evaluated") == std::string::npos) {
+          return fail("frame " + std::to_string(frame) + " did not produce an evaluated HUD");
+        }
+        saw_evaluated_hud = true;
+      }
 
       const std::filesystem::path path = frame_path(output, frame);
       std::ofstream file(path);

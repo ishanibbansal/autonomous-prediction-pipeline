@@ -1,5 +1,7 @@
 # Autonomous Prediction Pipeline
 
+![BEV Multi-Object Tracking & Multi-Modal Trajectory Prediction](docs/assets/bev_demo.gif)
+
 A standalone C++17 library for multi-object tracking and trajectory prediction. This repository currently contains Milestone 1, Milestone 2, and Milestone 3 Phases 1–3: detection contracts, ego-to-world coordinate transforms, stream-based CSV ingestion, a single-target 6D Kalman filter, gated global data association, a multi-object tracker, a kinematic multimodal trajectory predictor, a minADE / minFDE / miss-rate evaluator, and a header-only bird's-eye-view SVG visualizer.
 
 Detections can be transformed with a planar `SE(2)` pose or projected from an upstream `4 x 4` `SE(3)` ego-to-world transform onto the global bird's-eye-view plane. Downstream track and trajectory structs are declared so later phases can link against the same contracts.
