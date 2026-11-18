@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -107,6 +108,24 @@ struct GroundTruthWaypoint {
 struct GroundTruthTrajectory {
   std::uint64_t track_id{0};
   std::vector<GroundTruthWaypoint> waypoints{};
+};
+
+/// Unweighted geometric scores for one predicted track.
+///
+/// min_ade and min_fde are selected independently. best_ade_mode is the
+/// earliest zero-based mode whose average displacement is strictly smaller
+/// than every preceding mode. best_fde_mode is the earliest zero-based mode
+/// whose final displacement is strictly smaller than every preceding mode.
+/// Exact computed ties keep the earlier mode. is_miss is true only when
+/// min_fde is strictly greater than the configured miss threshold; equality
+/// is a hit.
+struct TrajectoryMetrics {
+  std::uint64_t track_id{0};
+  double min_ade{0.0};
+  double min_fde{0.0};
+  std::size_t best_ade_mode{0};
+  std::size_t best_fde_mode{0};
+  bool is_miss{false};
 };
 
 /// Wraps a finite angle into [-pi, pi]. +/- pi are equivalent and either

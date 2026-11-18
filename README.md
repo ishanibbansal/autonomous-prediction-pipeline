@@ -1,6 +1,6 @@
 # Autonomous Prediction Pipeline
 
-A standalone C++17 library for multi-object tracking and trajectory prediction. This repository currently contains Milestone 1, Milestone 2, and Milestone 3 Phases 1–2: detection contracts, ego-to-world coordinate transforms, stream-based CSV ingestion, a single-target 6D Kalman filter, gated global data association, a multi-object tracker, a kinematic multimodal trajectory predictor, and a minADE / minFDE / miss-rate evaluator.
+A standalone C++17 library for multi-object tracking and trajectory prediction. This repository currently contains Milestone 1, Milestone 2, and Milestone 3 Phases 1–3: detection contracts, ego-to-world coordinate transforms, stream-based CSV ingestion, a single-target 6D Kalman filter, gated global data association, a multi-object tracker, a kinematic multimodal trajectory predictor, a minADE / minFDE / miss-rate evaluator, and a header-only bird's-eye-view SVG visualizer.
 
 Detections can be transformed with a planar `SE(2)` pose or projected from an upstream `4 x 4` `SE(3)` ego-to-world transform onto the global bird's-eye-view plane. Downstream track and trajectory structs are declared so later phases can link against the same contracts.
 
@@ -114,6 +114,43 @@ while (reader.read_next_frame(frame)) {
 - A non-finite coordinate difference, distance, or checked displacement sum throws `std::overflow_error`, including a sum in a mode that would not win. Overflow is not replaced by an online mean. Invalid structure, IDs, used fields, time order, or alignment throws `std::invalid_argument`.
 - `evaluate_batch` scores prediction `i` against ground truth `i`. It does not join by ID. Pairs are weighted equally, not by waypoint count. One invalid pair or an aggregate overflow rejects the whole call.
 
+`TrajectoryMetrics` is declared in `types.hpp` so a renderer can consume scores without including the evaluator. `metrics.hpp` still includes that declaration.
+
+## Milestone 3, Phase 3
+
+`prediction::BevVisualizer` renders one standalone SVG frame. It is header-only, has no graphics or filesystem dependency, and does not mutate its inputs. The only project include is `prediction/types.hpp`.
+
+- World `(x, y)` maps to screen `(X, Y)` by `X = W/2 + (x - c_x) s` and `Y = H/2 - (y - c_y) s`. The viewport may be fractional and the camera may be off center.
+- The metric grid is anchored to world multiples of `grid_spacing_meters`. If either axis would need more than 2048 visible lines, that frame omits the grid instead of walking an unbounded index.
+- Covariance contours are `n`-sigma envelopes of the waypoint `2 x 2` position covariance, rotated by the major eigenvector. For a full-rank 2D Gaussian, a `2`-sigma contour encloses about 86.5 percent of the density, not 95 percent. Zero-rank envelopes are omitted. Rank-one envelopes are line segments.
+- Vehicle boxes come only from the `tracks` argument. Heading rotates the box; velocity is drawn separately from `p` to `p + tau v`, so a north-facing box can have an eastward arrow.
+- The first three mode colors are a convention for `KinematicTrajectoryPredictor` (straight, counterclockwise, clockwise), not inferred maneuver semantics. Modes at index 3 and above get a deterministic fallback color and a numeric index. Nonempty `modes` are authoritative; the legacy `waypoints` copy is ignored. An empty `modes` vector may still draw nonempty legacy waypoints.
+- Score labels join by `track_id`. A duplicated id among tracks or among metrics omits that track's score line. The HUD still averages every supplied metric entry and reports miss percentage from `is_miss`. Empty metrics means the frame was not evaluated.
+
+Named layers, back to front, are `background`, `grid`, `ground_truth`, `uncertainty`, `predictions`, `tracks`, `labels`, and `hud`.
+
+### Optional scenario demo
+
+`bev_demo` is not part of the library or the normal test build. Configure with the examples option, then write a fresh directory of frames:
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DPREDICTION_BUILD_EXAMPLES=ON
+cmake --build build --target bev_demo
+./build/bev_demo /tmp/bev_frames
+```
+
+The scenario uses `MultiObjectTracker` with `TrackOutputPolicy::All`, `KinematicTrajectoryPredictor`, `TrajectoryEvaluator`, and `BevVisualizer`. It writes `frame_0000.svg` upward. An existing `frame_*.svg` in the target directory is rejected so stale frames are not mixed in. The directory itself is not deleted.
+
+`tools/make_gif.py` is optional and is not discovered by CMake. It needs `cairosvg` and `Pillow`:
+
+```bash
+python3 tools/make_gif.py \
+  --input-dir /tmp/bev_frames \
+  --output /tmp/bev_scenario.gif \
+  --fps 10 \
+  --width 640
+```
+
 Engineering decisions and verification notes live in [`docs/dev_log.md`](docs/dev_log.md).
 
 ## Directory structure
@@ -127,7 +164,11 @@ Engineering decisions and verification notes live in [`docs/dev_log.md`](docs/de
 │   ├── data_association.hpp      # Gated Hungarian track-to-detection assignment
 │   ├── tracker.hpp               # Multi-object lifecycle: confirm, coast, prune, birth
 │   ├── predictor.hpp             # Constant-speed three-mode trajectory forecast
-│   └── metrics.hpp               # minADE, minFDE, and miss-rate evaluation
+│   ├── metrics.hpp               # minADE, minFDE, and miss-rate evaluation
+│   └── visualizer.hpp            # Header-only bird's-eye-view SVG renderer
+├── tools/
+│   ├── run_bev_scenario.cpp      # Optional deterministic intersection demo
+│   └── make_gif.py               # Optional SVG-to-GIF conversion; not built by CMake
 ├── tests/
 │   ├── CMakeLists.txt                # GoogleTest v1.14.0 via FetchContent
 │   ├── test_ingestion.cpp            # Angle wrap and frame-transform tests
@@ -141,7 +182,9 @@ Engineering decisions and verification notes live in [`docs/dev_log.md`](docs/de
 │   ├── test_predictor.cpp            # Kinematic rollout, covariance, and rejection tests
 │   ├── predictor_linkage.cpp         # Second TU for the header-only predictor ODR check
 │   ├── test_metrics.cpp              # minADE/minFDE scoring, alignment, and overflow tests
-│   └── metrics_linkage.cpp           # Second TU for the header-only evaluator ODR check
+│   ├── metrics_linkage.cpp           # Second TU for the header-only evaluator ODR check
+│   ├── test_visualizer.cpp           # Projection, covariance, grid, and HUD tests
+│   └── visualizer_linkage.cpp        # Second TU for the header-only visualizer ODR check
 └── docs/dev_log.md               # Engineering scratchpad, not a user guide
 ```
 

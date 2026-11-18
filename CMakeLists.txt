@@ -28,5 +28,12 @@ else()
   )
 endif()
 
+option(PREDICTION_BUILD_EXAMPLES "Build demo and scenario executables" OFF)
+
+if(PREDICTION_BUILD_EXAMPLES)
+  add_executable(bev_demo tools/run_bev_scenario.cpp)
+  target_link_libraries(bev_demo PRIVATE prediction_lib Eigen3::Eigen)
+endif()
+
 enable_testing()
 add_subdirectory(tests)
